@@ -42,6 +42,7 @@ class ProcessOwner:
     def poll(self):
         if self.exited:
             return
+        newly_attached = self.handle is None
         if self.handle is None:
             if time.monotonic() < self.next_discovery:
                 return
@@ -56,6 +57,12 @@ class ProcessOwner:
             if not handle:
                 return  # It may have closed between discovery and OpenProcess.
             try:
+                code = U32()
+                if not self.k.GetExitCodeProcess(handle, C.byref(code)):
+                    raise ValueError('process_identity_unavailable')
+                if code.value != 259:
+                    self.k.CloseHandle(handle)
+                    return
                 if os.path.normcase(process_path(self.k, handle)) != os.path.normcase(str(self.wow)):
                     raise ValueError('process_identity_changed')
             except BaseException:
@@ -66,7 +73,11 @@ class ProcessOwner:
         if not self.k.GetExitCodeProcess(self.handle, C.byref(code)):
             raise ValueError('process_identity_unavailable')
         if code.value != 259:
-            self.exited = True
+            if newly_attached:
+                self.close()
+                self.pid = None
+            else:
+                self.exited = True
             self.rows = ()
             return
         rows = tcp_rows(self.pid, connecting=True)
@@ -74,7 +85,11 @@ class ProcessOwner:
         if not self.k.GetExitCodeProcess(self.handle, C.byref(code)):
             raise ValueError('process_identity_unavailable')
         if code.value != 259:
-            self.exited = True
+            if newly_attached:
+                self.close()
+                self.pid = None
+            else:
+                self.exited = True
             self.rows = ()
         else:
             self.rows = tuple((tuple(r['client']), tuple(r['server'])) for r in rows if r['server'][1] == 3724)
@@ -136,10 +151,20 @@ class SessionArchive:
         self.last_error = None
 
 
-def export_captures(output, adapter_outputs, secrets, *, process_exited, dumps=None):
+def export_captures(output, adapter_outputs, secrets, *, process_exited, dumps=None, metadata=None):
     """Try session snapshots and export validated PKT candidates."""
     from scripts.sniffer_decode_session import decode
     results = []
+    context_path = output / 'private-metadata.json'
+    if metadata is not None:
+        from .capture_metadata import validate_metadata
+        metadata = validate_metadata(metadata)
+    elif context_path.exists():
+        from .capture_metadata import validate_metadata
+        with context_path.open('rb') as stream:
+            raw = stream.read(65537)
+        if len(raw) > 65536:raise ValueError('capture_metadata_limit')
+        metadata = validate_metadata(json.loads(raw))
     candidates = output / 'private-candidates'
     candidates.mkdir()
     for source_dir in adapter_outputs:
@@ -158,7 +183,8 @@ def export_captures(output, adapter_outputs, secrets, *, process_exited, dumps=N
                 temporary = candidates / f'{number:03d}-{attempt:02d}.pkt'
                 try:
                     receipt = decode(source_dir / flow['file'], temporary, secret, flows_path, index,
-                                     process_exited=process_exited, max_bytes=MAX_BYTES, max_packets=MAX_PACKETS)
+                                     process_exited=process_exited, max_bytes=MAX_BYTES, max_packets=MAX_PACKETS,
+                                     metadata=metadata, connection_index=number)
                 except (ValueError, OSError, TypeError, KeyError, IndexError) as exc:
                     if type(exc) is ValueError and str(exc) in {
                         'unsupported_authentication_layout','unsupported_challenge_layout',
@@ -191,6 +217,8 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
                 owner_factory=ProcessOwner, adapters_factory=capture_adapters,
                 archive_factory=SessionArchive, capture=None, export=export_captures,
                 inspect=inspect_build, exit_grace=1.0, seconds=MAX_SECONDS, dumps=None):
+    from .capture_metadata import capture_context
+    context = None
     from scripts.sniffer_capture_start import run_capture
     from .updates import update_lock, safe_store, default_store
     capture = capture or run_capture
@@ -264,6 +292,8 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
             last_state = None
             while not stop.is_set():
                 owner.poll()
+                if owner.pid is not None and not owner.exited and context is None:
+                    context = capture_context(wow)
                 owned_connections.update(owner.rows)
                 if len(owned_connections) > MAX_ADAPTERS * 32:
                     raise ValueError('owned_connection_limit')
@@ -317,12 +347,19 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
             for thread in workers:
                 thread.join(20)
             owner.close()
+            if context is not None:
+                try:
+                    with (output/'private-metadata.json').open('x', encoding='utf-8') as stream:
+                        json.dump(context, stream, indent=2)
+                except OSError:
+                    errors.append({'code': 'capture_metadata_save_failed'})
         if any(t.is_alive() for t in workers):
             raise ValueError('capture_shutdown_incomplete')
         emit('saving')
         secrets = archive.paths if 'archive' in locals() else []
         try:
             options = {'dumps': dumps} if dumps is not None else {}
+            if context is not None:options['metadata'] = context
             results = export(output, folders, secrets, process_exited=reason == 'process_exited', **options)
         except Exception:
             errors.append({'code':'export_failed'})
@@ -360,6 +397,8 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
                   'session_snapshots': len(secrets), 'capture_counts': totals,
                   'observed_owned_connections': len(owned_connections),
                   'uncaptured_owned_connections': missing_connections,
+                  'metadata_recorded': context is not None,
+                  'locale_source': context.get('locale_source') if context else None,
                   'retry_before_game': retry_before_game}
         with (output / 'result.json').open('x') as f:
             json.dump(result, f, indent=2)

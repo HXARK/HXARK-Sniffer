@@ -35,7 +35,7 @@ class BuildProfile:
 # validated locally on 2026-10-31. The 70575 profile remains independent.
 PROFILES = {
     69875: BuildProfile(69875, '12.1.0.69875', None, 0x4c000e, 0x4c000d,
-                        'reference_ymir_static'),
+                        'reference_static_69875'),
     70575: BuildProfile(70575, '12.1.5.70575',
                         '14b70997cf6c7971a4fcd533b7f421316b6a3da0c8da3710425a8dd20e356a29',
                         0x4c000e, 0x4c000d, 'live_70575_continued_session_20261024',

@@ -20,8 +20,7 @@ Wireshark uses the GPL. Npcap has separate licensing.
 
 PKT compatibility was checked against WowPacketParser:
 https://github.com/TrinityCore/WowPacketParser
-Protocol and memory-layout research also used static inspection of Ymir.
-No Ymir binary or decompiler output, WPP source or patches, WoW files, real
+No third-party sniffer binary or decompiler output, WPP source or patches, WoW files, real
 captures or session data are included.
 
 Product names and trademarks belong to their respective owners. The HXARK

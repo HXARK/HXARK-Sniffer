@@ -1,4 +1,4 @@
-"""Decode 70575 PCAP using a DPAPI-protected session snapshot."""
+"""Decode a supported PCAP using a DPAPI-protected session snapshot."""
 import argparse
 import hashlib
 import json
@@ -25,7 +25,8 @@ def _identity(stat):
     return stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns
 
 
-def decode(source,destination,protected,flows,flow_index,*,process_exited=False,max_bytes=32*1024*1024,max_packets=50000):
+def decode(source,destination,protected,flows,flow_index,*,process_exited=False,max_bytes=32*1024*1024,max_packets=50000,
+           metadata=None,connection_index=None):
     if type(max_bytes) is not int or not 1024<=max_bytes<=1024**3:raise ValueError('input_limit')
     if type(max_packets) is not int or not 1<=max_packets<=10000000:raise ValueError('input_limit')
     secret=json.loads(unprotect(_bounded_read(protected,65536)))
@@ -55,7 +56,8 @@ def decode(source,destination,protected,flows,flow_index,*,process_exited=False,
                 raise ValueError('independent_container_check_failed')
         result=replay(f,destination,profile=profile,client=flow['client'],server=flow['server'],
                       keys={'client':key,'server':key},encrypted_from=boundaries,validate_output=validate,
-                      max_packets=max_packets,max_bytes=max_bytes,process_exited=process_exited)
+                      max_packets=max_packets,max_bytes=max_bytes,process_exited=process_exited,metadata=metadata,
+                      connection_index=flow_index if connection_index is None else connection_index)
     with destination.open('rb') as f:pkt_hash=hashlib.file_digest(f,'sha256').hexdigest()
     result.update({'independent_container_check':independent,'handshake_validated':True,
                    'key_source':'Windows_DPAPI_session','contains_private_game_data':True,

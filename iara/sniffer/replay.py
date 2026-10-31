@@ -20,7 +20,12 @@ def _endpoint(value):
 
 
 def replay(source, destination, *, profile, client, server, keys, encrypted_from,
-           max_packets=1000000, max_bytes=1024**3, validate_output=None, process_exited=False):
+           max_packets=1000000, max_bytes=1024**3, validate_output=None, process_exited=False,
+           metadata=None, connection_index=0):
+    from .capture_metadata import validate_metadata
+    metadata = validate_metadata(metadata) if metadata is not None else None
+    if type(connection_index) is not int or not 0 <= connection_index < 2**31:
+        raise ValueError('invalid_connection')
     client=_endpoint(client);server=_endpoint(server)
     if client==server:raise ValueError('invalid_endpoints')
     codecs={d:DirectionDecoder(profile,d,encrypted_from=encrypted_from[d],key=keys[d])
@@ -35,7 +40,8 @@ def replay(source, destination, *, profile, client, server, keys, encrypted_from
             selected+=1
             if started is None:
                 started=packet.timestamp_ns
-                writer=PKTWriter(destination,build=profile.build,start_unix=started//10**9,start_ticks=0)
+                options = {'locale': metadata['locale'], 'utc_offset_seconds': metadata['utc_offset_seconds']} if metadata else {}
+                writer=PKTWriter(destination,build=profile.build,start_unix=started//10**9,start_ticks=0,**options)
             # PKT start_unix is whole seconds. Preserve the fractional second
             # in each record, including when comparing separate connections.
             ticks=packet.timestamp_ns//10**6-(started//10**9)*1000
@@ -55,7 +61,8 @@ def replay(source, destination, *, profile, client, server, keys, encrypted_from
             if packet.payload:
                 contiguous=streams[direction].feed(sequence,packet.payload)
                 for opcode,payload in codecs[direction].feed(contiguous):
-                    writer.append(direction,0,ticks,opcode,payload)
+                    options = {'timestamp_ns': packet.timestamp_ns} if metadata else {}
+                    writer.append(direction,connection_index,ticks,opcode,payload,**options)
             if packet.flags & 1:
                 end=(sequence+len(packet.payload))%(2**32)
                 if direction in ends and ends[direction]!=end:raise ValueError('conflicting_fin')
@@ -81,6 +88,9 @@ def replay(source, destination, *, profile, client, server, keys, encrypted_from
                         'authenticated_frames':sum(max(0,c.frames-encrypted_from[d]) for d,c in codecs.items()),
                         'build':profile.build,'profile_evidence':profile.evidence,
                         'time_basis':'packet_completing_message','source':'local_pcap',
+                        'extended_metadata': metadata is not None, 'connection_index': connection_index,
+                        'utc_offset_seconds': metadata['utc_offset_seconds'] if metadata else None,
+                        'locale': metadata['locale'] if metadata else 'enUS',
                         'build_compatibility_verified':profile.live_verified})
         return receipt
     finally:

@@ -96,6 +96,12 @@ def run(root, *, initial_auth=False, changed_address=False):
     if len(pkts)!=1:raise ValueError('unexpected_capture_count')
     proof=inspect_file(pkts[0])
     if not proof['complete'] or proof['records']!=6:raise ValueError('synthetic_pkt_mismatch')
+    with pkts[0].open('rb') as stream:
+        header=stream.read(72)
+    if header[:6]!=b'PKT\x01\x03\x16' or header[62:68]!=b'\x06\0\0\0\x03\x01':
+        raise ValueError('capture_metadata_header_missing')
+    if result['captures'][0]['receipt'].get('extended_metadata') is not True:
+        raise ValueError('capture_metadata_not_verified')
     if not pkts[0].name.startswith('Orgrimmar_b70575_'):raise ValueError('capture_location_name_mismatch')
     if list((root/'captures').glob('*/*.pkt')) or any(p.suffix!='.pkt' for p in (root/'dumps').iterdir()):
         raise ValueError('capture_library_not_separated')
@@ -106,6 +112,7 @@ def run(root, *, initial_auth=False, changed_address=False):
            'client_address_differs_from_armed_addresses':changed_address,
            'process_exit_simulated':True,'native_process_exit_test_separate':True,
            'pkt_records':proof['records'],'public_dumps_only_pkt':True,'verified_area_label':'Orgrimmar',
+           'extended_metadata_header_verified':True,
            'live_game_capture':False,'result':result,'events':events}
     (root/'proof.json').write_text(json.dumps(proof,indent=2))
     return proof

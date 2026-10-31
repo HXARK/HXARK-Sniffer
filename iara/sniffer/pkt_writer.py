@@ -7,6 +7,9 @@ from pathlib import Path
 import struct
 
 MAX_PAYLOAD = 16*1024*1024
+# PKT 3.1 extension discriminator/version understood by existing WPP readers.
+EXTENDED_ID = 0x16
+EXTENDED_VERSION = 0x0103
 
 
 def uint(value, bits):
@@ -15,28 +18,43 @@ def uint(value, bits):
     return value
 
 
-def header(build, start_unix, start_ticks, locale='enUS'):
+def header(build, start_unix, start_ticks, locale='enUS', *, utc_offset_seconds=None):
     if type(locale) is not str or len(locale) != 4 or not locale.isascii() or not locale.isalpha():
         raise ValueError('invalid_locale')
-    # 0 is deliberately not Ymir's registered sniffer identifier. No session key.
-    return (b'PKT'+struct.pack('<HBI',0x301,0,uint(build,32))+locale.encode('ascii')+
-            bytes(40)+struct.pack('<IIi',uint(start_unix,32),uint(start_ticks,32),0))
+    extra = b''
+    if utc_offset_seconds is not None:
+        if (type(utc_offset_seconds) is not int or not -14*3600 <= utc_offset_seconds <= 14*3600
+                or utc_offset_seconds % 60):
+            raise ValueError('invalid_utc_offset')
+        extra = struct.pack('<Hi', EXTENDED_VERSION, utc_offset_seconds)
+    # Keys are deliberately excluded. The ID selects a wire layout, not an app name.
+    return (b'PKT'+struct.pack('<HBI',0x301,EXTENDED_ID if extra else 0,uint(build,32))+locale.encode('ascii')+
+            bytes(40)+struct.pack('<IIi',uint(start_unix,32),uint(start_ticks,32),len(extra))+extra)
 
 
-def record(direction, connection, ticks, opcode, payload):
+def record(direction, connection, ticks, opcode, payload, *, timestamp_ns=None):
     if direction not in ('server','client'):
         raise ValueError('invalid_direction')
     if type(connection) is not int or not -(2**31) <= connection < 2**31:
         raise ValueError('invalid_connection')
     if type(payload) is not bytes or len(payload)>MAX_PAYLOAD:
         raise ValueError('invalid_payload')
+    extra = b''
+    if timestamp_ns is not None:
+        if type(timestamp_ns) is not int or not 0 <= timestamp_ns < (1 << 32)*10**9:
+            raise ValueError('invalid_timestamp')
+        # WPP's extended record layout requires a comment-length byte.
+        extra = struct.pack('<dB', timestamp_ns / 10**6, 0)
     magic=0x47534d53 if direction=='server' else 0x47534d43
-    return struct.pack('<IiIiiI',magic,connection,uint(ticks,32),0,len(payload)+4,uint(opcode,32))+payload
+    return (struct.pack('<IiIii',magic,connection,uint(ticks,32),len(extra),len(payload)+4)+
+            extra+struct.pack('<I',uint(opcode,32))+payload)
 
 
 class PKTWriter:
-    def __init__(self, destination, *, build, start_unix, start_ticks, locale='enUS', max_bytes=1024**3):
-        first=header(build,start_unix,start_ticks,locale)
+    def __init__(self, destination, *, build, start_unix, start_ticks, locale='enUS', max_bytes=1024**3,
+                 utc_offset_seconds=None):
+        first=header(build,start_unix,start_ticks,locale,utc_offset_seconds=utc_offset_seconds)
+        self.extended = utc_offset_seconds is not None
         if type(max_bytes) is not int or not len(first)<=max_bytes<=8*1024**3:
             raise ValueError('invalid_file_limit')
         self.destination=Path(destination).absolute()
@@ -59,9 +77,10 @@ class PKTWriter:
             self.failed=True
             raise
 
-    def append(self, direction, connection, ticks, opcode, payload):
+    def append(self, direction, connection, ticks, opcode, payload, *, timestamp_ns=None):
         if self.stream.closed or self.failed:raise ValueError('writer_unavailable')
-        data=record(direction,connection,ticks,opcode,payload)
+        if self.extended != (timestamp_ns is not None):raise ValueError('timestamp_layout_mismatch')
+        data=record(direction,connection,ticks,opcode,payload,timestamp_ns=timestamp_ns)
         if self.bytes+len(data)>self.max_bytes:raise ValueError('capture_size_limit')
         self._write(data);self.records+=1
 

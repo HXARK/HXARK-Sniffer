@@ -52,11 +52,23 @@ def describe_capture(source):
         if _identity(os.fstat(stream.fileno())) != _identity(before):
             raise ValueError('capture_changed')
         header = stream.read(66)
-        if header[:6] != b'PKT\x01\x03\x00' or struct.unpack_from('<i', header, 62)[0] != 0:
+        if len(header) != 66 or header[:5] != b'PKT\x01\x03':
+            raise ValueError('unsupported_capture_container')
+        additional = struct.unpack_from('<i', header, 62)[0]
+        if header[5] == 0 and additional == 0:
+            pass
+        elif header[5] == 0x16 and additional == 6:
+            extra_header = stream.read(6)
+            if len(extra_header) != 6:
+                raise ValueError('truncated_capture')
+            version, utc_offset = struct.unpack('<Hi', extra_header)
+            if version != 0x103 or not -14*3600 <= utc_offset <= 14*3600 or utc_offset % 60:
+                raise ValueError('unsupported_capture_container')
+        else:
             raise ValueError('unsupported_capture_container')
         build = struct.unpack_from('<I', header, 6)[0]
         started = struct.unpack_from('<I', header, 54)[0]
-        offset, records = 66, 0
+        offset, records = 66 + additional, 0
         while offset < before.st_size:
             if records >= 1000000:
                 raise ValueError('capture_record_limit')

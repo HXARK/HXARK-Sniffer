@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .iara/
+/tests/
 build/
 dist/
 release/
