@@ -2,7 +2,7 @@
 
 WoW Retail packet capture for Windows. Detects the network interface and saves PKT files for [WowPacketParser](https://github.com/TrinityCore/WowPacketParser).
 
-**Beta: Retail 12.1.5.70575, Windows x64, IPv4.**
+**Beta: Retail 12.1.5 builds 70575 and 70688, Windows x64, IPv4.**
 
 ## Use
 
@@ -13,6 +13,9 @@ WoW Retail packet capture for Windows. Detects the network interface and saves P
 You can leave the sniffer open between sessions. Select `Wow.exe` once if it is not found. If capture support is missing, use the setup button and keep Npcap selected in the Wireshark installer.
 
 The EXE runs without Python or an account. Captures stay on your PC.
+
+The sniffer captures and saves PKTs. Parse saved files separately with WPP;
+the sniffer does not include, install or run the parser.
 
 PKTs are saved in `%LOCALAPPDATA%\HXARK\Sniffer\dumps`. Keep recovery files and session keys private.
 

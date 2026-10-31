@@ -31,6 +31,8 @@ class BuildProfile:
 
 # 69875 control opcodes: static analysis only.
 # 70575: complete continued-session capture validated on 2026-10-24.
+# 70688: session layout, control opcodes and a complete authenticated connection
+# validated locally on 2026-10-31. The 70575 profile remains independent.
 PROFILES = {
     69875: BuildProfile(69875, '12.1.0.69875', None, 0x4c000e, 0x4c000d,
                         'reference_ymir_static'),
@@ -39,6 +41,11 @@ PROFILES = {
                         0x4c000e, 0x4c000d, 'live_70575_continued_session_20261024',
                         live_verified=True, key_locator_verified=True, control_opcodes_verified=True,
                         layout=DEFAULT_LAYOUT),
+    70688: BuildProfile(70688, '12.1.5.70688',
+                        '5cc7dd578e4100f43b630eff8f8ae6fa32907cda83451c434ae01046052d1d4f',
+                        0x4c000e, 0x4c000d, 'live_70688_continued_session_20261031',
+                        live_verified=True, key_locator_verified=True, control_opcodes_verified=True,
+                        layout=SessionLayout(0x4ae07d0,0x4187e88)),
 }
 
 
