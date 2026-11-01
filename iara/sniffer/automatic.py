@@ -38,6 +38,9 @@ class ProcessOwner:
         self.exited = False
         self.rows = ()
         self.next_discovery = 0
+        self.unsupported_rows = ()
+        self.ipv6_inventory_complete = True
+        self.next_ipv6 = 0
 
     def poll(self):
         if self.exited:
@@ -81,10 +84,19 @@ class ProcessOwner:
             self.rows = ()
             return
         rows = tcp_rows(self.pid, connecting=True)
+        if time.monotonic() >= self.next_ipv6:
+            try:
+                self.unsupported_rows = tuple((tuple(r['client']), tuple(r['server']))
+                    for r in tcp_rows(self.pid, connecting=True, ipv6=True)
+                    if r['server'][1] == 3724 and not ipaddress.ip_address(r['server'][0]).is_loopback)
+            except (ValueError, OSError):
+                self.ipv6_inventory_complete = False
+            self.next_ipv6 = time.monotonic() + 1
         # Discard rows if the process exited during the table read.
         if not self.k.GetExitCodeProcess(self.handle, C.byref(code)):
             raise ValueError('process_identity_unavailable')
         if code.value != 259:
+            self.unsupported_rows = ()
             if newly_attached:
                 self.close()
                 self.pid = None
@@ -246,10 +258,17 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
     workers, folders, ready, errors, receipts = [], [], set(), [], {}
     progress = {}
     owned_connections = set()
+    unsupported_connections = set()
+    warnings = set()
+    session_started = None
     mutex = threading.Lock()
     reason = 'user_stopped'
     def emit(state, **values):
         notify({'state': state, **values})
+    def warn(code):
+        if code not in warnings:
+            warnings.add(code)
+            emit('warning', code=code)
     def worker(index, local, interface, folder):
         def armed():
             with mutex:
@@ -261,7 +280,7 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
             receipts[index] = capture(folder, interface=interface, local=local, servers=None,
                 server_port=3724, interface_scope=True, owner=lambda: list(owner.rows), seconds=seconds,
                 on_ready=armed, on_progress=report, stop_requested=halt, max_bytes=MAX_BYTES//len(adapters),
-                max_packets=MAX_PACKETS//len(adapters))
+                max_packets=MAX_PACKETS//len(adapters), duration_started=lambda: session_started)
         except Exception as exc:
             safe = {'capture_limit', 'capture_flow_limit', 'capture_quarantine_full', 'capture_not_ready',
                     'capture_tuple_reused', 'capture_process_failed', 'truncated_ipv4', 'truncated_tcp',
@@ -292,9 +311,15 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
             last_state = None
             while not stop.is_set():
                 owner.poll()
+                now = time.monotonic()
+                if owner.pid is not None and session_started is None:
+                    session_started = now
                 if owner.pid is not None and not owner.exited and context is None:
                     context = capture_context(wow)
                 owned_connections.update(owner.rows)
+                unsupported_connections.update(getattr(owner, 'unsupported_rows', ()))
+                if len(unsupported_connections) > MAX_ADAPTERS * 32:
+                    raise ValueError('owned_connection_limit')
                 if len(owned_connections) > MAX_ADAPTERS * 32:
                     raise ValueError('owned_connection_limit')
                 now = time.monotonic()
@@ -302,6 +327,15 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
                     armed_count = len(ready)
                     failed = bool(errors)
                     captured = sum(v.get('persisted_packets', 0) for v in progress.values())
+                    near_limit = any(
+                        v.get('input_bytes', 0) >= MAX_BYTES//len(adapters)*.8 or
+                        v.get('candidate_packets', 0) >= MAX_PACKETS//len(adapters)*.8 or
+                        v.get('tracked_connections', 0) >= 25 for v in progress.values())
+                if not owner.exited:
+                    if unsupported_connections:warn('unsupported_game_connection')
+                    if (near_limit or len(archive.paths) >= 25 or
+                        (session_started is not None and now-session_started >= seconds*.9)):
+                        warn('capture_limit_near')
                 if owner.exited:
                     if exited_at is None:
                         exited_at = now
@@ -328,12 +362,14 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
                 if not all(t.is_alive() for t in workers):
                     reason = 'capture_limit'
                     break
-                if now-started >= seconds:
+                if session_started is not None and now-session_started >= seconds:
                     reason = 'duration_limit'
                     break
                 if now-started > 12 and armed_count != len(adapters):
                     raise ValueError('capture_not_ready')
-                if shutil.disk_usage(output).free < 256*1024**2:
+                free = shutil.disk_usage(output).free
+                if free < 512*1024**2:warn('capture_disk_low')
+                if free < 256*1024**2:
                     raise ValueError('insufficient_capture_disk')
                 stop.wait(.05)
         except Exception as exc:
@@ -378,6 +414,21 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
                 # Treat missing or invalid collector records as incomplete capture.
                 continue
         missing_connections = len(owned_connections - captured_connections)
+        stats_complete = len(receipts) == len(adapters) and all(
+            r.get('capture_stats_status') == 'complete' and
+            type(r.get('capture_dropped_packets')) is int and r['capture_dropped_packets'] >= 0
+            for r in receipts.values())
+        dropped = sum(r['capture_dropped_packets'] for r in receipts.values()) if stats_complete else None
+        if any(r.get('capture_stop_forced') for r in receipts.values()):
+            errors.append({'code': 'capture_shutdown_forced'})
+        if any(r.get('capture_dropped_packets', 0) for r in receipts.values()):
+            errors.append({'code': 'capture_packet_loss'})
+        if unsupported_connections:
+            errors.append({'code': 'unsupported_game_connection', 'count': len(unsupported_connections)})
+        if not getattr(owner, 'ipv6_inventory_complete', True):
+            errors.append({'code': 'ipv6_inventory_unavailable'})
+        if owner.pid is not None and reason in ('capture_limit', 'duration_limit'):
+            errors.append({'code': reason})
         if missing_connections:
             errors.append({'code': 'owned_game_flow_not_captured', 'count': missing_connections})
         if reason == 'process_exited' and not results and not errors:
@@ -397,11 +448,22 @@ def run_session(wow, captures, stop, notify=lambda value: None, *,
                   'session_snapshots': len(secrets), 'capture_counts': totals,
                   'observed_owned_connections': len(owned_connections),
                   'uncaptured_owned_connections': missing_connections,
+                  'unsupported_game_connections': len(unsupported_connections),
+                  'capture_stats_status': 'complete' if stats_complete else 'unavailable',
+                  'capture_dropped_packets': dropped,
+                  'warnings': sorted(warnings),
                   'metadata_recorded': context is not None,
                   'locale_source': context.get('locale_source') if context else None,
                   'retry_before_game': retry_before_game}
+        if dumps is not None:
+            from .capture_quality import write_session_metadata
+            try:
+                write_session_metadata(dumps, result, observation, context)
+            except (OSError, ValueError):
+                result['quality_metadata_complete'] = False
         with (output / 'result.json').open('x') as f:
             json.dump(result, f, indent=2)
         emit('network_wait' if retry_before_game else 'saved' if result['complete'] else 'incomplete',
-             files=sum(r['ok'] for r in results), reason=reason)
+             files=sum(r['ok'] for r in results), reason=reason,
+             capture_stats_status=result['capture_stats_status'], errors=[e['code'] for e in errors])
         return result

@@ -20,11 +20,13 @@ from iara.sniffer.capture_gate import CaptureGate
 from iara.sniffer.pcap import _read, decode_tcp
 from iara.sniffer.windows_inventory import find_process, tcp_rows, adapter_addresses, fixed_version
 from iara.sniffer.profiles import select_profile
+from iara.sniffer.capture_control import SignalPipe, capture_statistics
 
 
 def run_capture(output, *, interface, local, servers, owner, seconds=300,
                 dumpcap=None, on_ready=None, on_progress=None, stop_requested=None,
-                server_port=None, interface_scope=False, max_bytes=32*1024*1024, max_packets=50000):
+                server_port=None, interface_scope=False, max_bytes=32*1024*1024, max_packets=50000,
+                duration_started=None):
     """owner() returns confirmed tuples, or [] while waiting for the process.
 
     Callback errors abort capture instead of being treated as an empty table.
@@ -64,6 +66,9 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
     packets = 0
     total = 24
     requested_stop=False
+    stop_deadline=None
+    control=None
+    receipt.update(capture_stats_status='unavailable', capture_dropped_packets=None, capture_stop_forced=False)
     owner_polls = owner_observations = matching_owner_observations = 0
     def checkpoint():
         for f in files.values():
@@ -73,6 +78,7 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
                         'owner_observations': owner_observations,
                         'matching_owner_observations': matching_owner_observations,
                         'owned_connections': len(files),
+                        'tracked_connections': len(gate.flows),
                         'persisted_packets': sum(v['packets'] for v in metadata.values()),
                         'discarded_packets': gate.discarded,
                         'unconfirmed_packets': sum(len(f.pending) for f in gate.flows.values() if f),
@@ -133,14 +139,17 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
             files[key].write(raw)
             metadata[key]['packets'] += 1
     try:
-        argv = [str(dumpcap), '-i', interface, '-p', '-F', 'pcap', '-s', '262144', '-f', rule,
-                '-a', f'duration:{seconds}', '-a', f'filesize:{max_bytes//1024}', '-c', str(max_packets), '-w', '-', '-q']
+        control = SignalPipe()
+        argv = [str(dumpcap), *control.arguments, '-i', interface, '-p', '-F', 'pcap', '-s', '262144', '-f', rule,
+                '-a', f'filesize:{max_bytes//1024}', '-c', str(max_packets), '-w', '-', '-q']
+        if duration_started is None:
+            argv.extend(['-a', f'duration:{seconds}'])
         with (output/'private-capture.log').open('xb') as log:
             process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=log, creationflags=0x08000000)
+            control.connect(process)
             worker = threading.Thread(target=reader, daemon=True)
             worker.start()
             started = time.monotonic()
-            deadline = started+seconds+15
             next_owner = started
             next_progress = started+1
             while True:
@@ -149,8 +158,17 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
                     requested_stop=True
                     receipt['stop_requested']=True
                     receipt['user_stopped']=True  # Legacy receipt; the supervisor records the actual reason.
-                    if process.poll() is None:process.terminate()
-                if now > deadline:
+                    if process.poll() is None:
+                        stop_deadline=now+5
+                        if not control.request_stop():
+                            receipt['capture_stop_forced']=True
+                            process.terminate()
+                if stop_deadline is not None and now >= stop_deadline and process.poll() is None:
+                    receipt['capture_stop_forced']=True
+                    process.terminate()
+                    stop_deadline=None
+                clock_start = started if duration_started is None else duration_started()
+                if clock_start is not None and now > clock_start+seconds+15:
                     raise ValueError('capture_timeout')
                 if header is None and now-started > 10:
                     raise ValueError('capture_not_ready')
@@ -195,6 +213,10 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
                     persist(gate.confirm(owner(),time.monotonic()))
                     receipt['capture_completed'] = True
                     break
+        with (output/'private-capture.log').open('rb') as diagnostic:
+            receipt.update(capture_statistics(diagnostic.read(8*1024*1024+1)))
+        if receipt['capture_stop_forced']:
+            receipt.update(capture_stats_status='unavailable', capture_dropped_packets=None)
     except BaseException as exc:
         receipt['error_type'] = type(exc).__name__
         # Return fixed codes rather than raw exception messages.
@@ -212,6 +234,7 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
         stop.set()
         if process is not None:
             if process.poll() is None:
+                receipt['capture_stop_forced']=True
                 process.terminate()
                 try:
                     process.wait(timeout=3)
@@ -222,6 +245,8 @@ def run_capture(output, *, interface, local, servers, owner, seconds=300,
                 worker.join(3)
             if process.stdout:
                 process.stdout.close()
+        if control is not None:
+            control.close()
         try:
             checkpoint()
         finally:

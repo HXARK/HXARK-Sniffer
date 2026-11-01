@@ -87,13 +87,18 @@ def main(argv=None):
     (package/'BUILD.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     archive=ROOT/'dist'/('HXARK-Sniffer-'+APP_VERSION+'-Windows-x64.zip')
     temp=archive.with_suffix('.zip.partial')
+    public_ca=distribution('certifi').locate_file('certifi/cacert.pem')
+    public_ca_hash=hashlib.sha256(public_ca.read_bytes()).digest()
     try:
         with zipfile.ZipFile(temp,'w',zipfile.ZIP_DEFLATED) as z:
             for file in sorted(package.rglob('*')):
                 if file.is_symlink() or getattr(file.lstat(),'st_file_attributes',0)&0x400:
                     raise ValueError('linked_distribution_file')
                 if not file.is_file():continue
-                if file.suffix.lower() in ('.pkt','.pcap','.dpapi','.sqlite3','.pem') or file.name.startswith('private-'):
+                is_public_ca=(file.relative_to(package).as_posix()=='_internal/certifi/cacert.pem' and
+                              hashlib.sha256(file.read_bytes()).digest()==public_ca_hash)
+                if (file.suffix.lower() in ('.pkt','.pcap','.dpapi','.sqlite3') or
+                    (file.suffix.lower()=='.pem' and not is_public_ca) or file.name.startswith('private-')):
                     raise ValueError('private_distribution_file')
                 z.write(file,'HXARKSniffer/'+file.relative_to(package).as_posix())
         with zipfile.ZipFile(temp) as z:

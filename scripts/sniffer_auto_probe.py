@@ -92,6 +92,8 @@ def run(root, *, initial_auth=False, changed_address=False):
         for worker in workers:worker.join(8)
     if errors or any(w.is_alive() for w in workers) or not result['complete']:
         raise ValueError('automatic_loopback_failed')
+    if result['capture_stats_status']!='complete' or result['capture_dropped_packets']!=0:
+        raise ValueError('automatic_capture_statistics_failed')
     pkts=list((root/'dumps').glob('*.pkt'))
     if len(pkts)!=1:raise ValueError('unexpected_capture_count')
     proof=inspect_file(pkts[0])
@@ -103,7 +105,13 @@ def run(root, *, initial_auth=False, changed_address=False):
     if result['captures'][0]['receipt'].get('extended_metadata') is not True:
         raise ValueError('capture_metadata_not_verified')
     if not pkts[0].name.startswith('Orgrimmar_b70575_'):raise ValueError('capture_location_name_mismatch')
-    if list((root/'captures').glob('*/*.pkt')) or any(p.suffix!='.pkt' for p in (root/'dumps').iterdir()):
+    metadata=pkts[0].with_name(pkts[0].name+'.capture.json')
+    quality=json.loads(metadata.read_text(encoding='utf-8'))
+    if (not result.get('quality_metadata_complete') or
+            quality['pktSha256']!=hashlib.sha256(pkts[0].read_bytes()).hexdigest() or
+            quality['pktRecords']!=proof['records'] or quality['sessionComplete'] is not True):
+        raise ValueError('capture_quality_receipt_mismatch')
+    if list((root/'captures').glob('*/*.pkt')) or set((root/'dumps').iterdir())!={pkts[0],metadata}:
         raise ValueError('capture_library_not_separated')
     proof={'automatic_supervisor':True,'source':'synthetic_loopback','no_prepare_or_stop_click':True,
            'authentication_path':'initial' if initial_auth else 'continued',
@@ -111,7 +119,8 @@ def run(root, *, initial_auth=False, changed_address=False):
            'duplicate_interface_not_started':not any((root/'captures').glob('*/private-adapter-02')),
            'client_address_differs_from_armed_addresses':changed_address,
            'process_exit_simulated':True,'native_process_exit_test_separate':True,
-           'pkt_records':proof['records'],'public_dumps_only_pkt':True,'verified_area_label':'Orgrimmar',
+           'pkt_records':proof['records'],'public_dumps_only_capture_files':True,'verified_area_label':'Orgrimmar',
+           'quality_receipt_verified':True,
            'extended_metadata_header_verified':True,
            'live_game_capture':False,'result':result,'events':events}
     (root/'proof.json').write_text(json.dumps(proof,indent=2))

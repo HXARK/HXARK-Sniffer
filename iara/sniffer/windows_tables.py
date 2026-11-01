@@ -1,6 +1,37 @@
 """Parse Windows inventory buffers."""
 
 import struct
+import ipaddress
+
+
+def parse_tcp6_table(data, pid, *, connecting=False):
+    """Read owned IPv6 connections without adding them to IPv4 capture."""
+    if type(data) is not bytes or not 4 <= len(data) <= 16 * 1024 * 1024:
+        raise ValueError('E_DATA_LENGTH')
+    if type(pid) is not int or not 1 <= pid <= 0xffffffff:
+        raise ValueError('E_PID')
+    count = struct.unpack_from('<I', data)[0]
+    if count > 65536 or len(data) < 4 + 56 * count:
+        raise ValueError('E_TRUNCATED')
+    result, seen = [], set()
+    for offset in range(4, 4 + 56 * count, 56):
+        state, owner = struct.unpack_from('<II', data, offset + 48)
+        if owner != pid or state not in ((3, 4, 5) if connecting else (5,)):
+            continue
+        endpoints = []
+        for position in (offset, offset + 24):
+            address = ipaddress.IPv6Address(data[position:position+16])
+            scope = struct.unpack_from('<I', data, position + 16)[0]
+            port = int.from_bytes(data[position+20:position+22], 'big')
+            if address.is_unspecified or address.is_multicast or not port:
+                raise ValueError('E_ADDRESS')
+            text = str(address) + (f'%{scope}' if scope else '')
+            endpoints.append((text, port))
+        key = tuple(endpoints)
+        if key not in seen:
+            seen.add(key)
+            result.append({'client': list(key[0]), 'server': list(key[1])})
+    return result
 
 
 def parse_tcp_table(data, pid, *, connecting=False):

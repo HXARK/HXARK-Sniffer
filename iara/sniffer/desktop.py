@@ -165,11 +165,27 @@ def start(*,smoke_test=False):
                 elif state=='saved':
                     state_label.configure(foreground=theme.TEXT)
                     count=event['files'];result_text.set('Last session: '+str(count)+' PKT '+('file' if count==1 else 'files')+' saved.')
+                    if event.get('capture_stats_status') == 'unavailable':
+                        result_text.set(result_text.get()+' Loss counters unavailable.')
                     status.set('Capture saved');detail.set('Your files are ready in Open captures.')
                 elif state=='incomplete':
                     state_label.configure(foreground=theme.DANGER)
                     result_text.set((str(event['files'])+' PKT file(s). Some data needs review.') if event['files'] else 'No PKT saved. Capture needs review.');status.set('Capture needs review')
                     detail.set('Captured data and diagnostics are kept on this PC.')
+                    limits=('capture_limit','duration_limit','capture_flow_limit','session_archive_limit','owned_connection_limit')
+                    if event.get('reason') in limits or any(code in limits for code in event.get('errors', [])):
+                        detail.set('Capture limit reached. Close WoW before starting another capture.')
+                    elif 'insufficient_capture_disk' in event.get('errors', []):
+                        detail.set('Capture stopped because disk space ran low. Saved files are kept.')
+                    elif 'capture_packet_loss' in event.get('errors', []):
+                        detail.set('The capture driver reported dropped packets. Saved files are kept.')
+                    elif 'unsupported_game_connection' in event.get('errors', []):
+                        detail.set('An IPv6 game connection could not be captured. Saved files are kept.')
+                elif state=='warning':
+                    messages={'capture_limit_near':'Capture nearing its limit. Close WoW soon to finish this session.',
+                              'capture_disk_low':'Disk space is running low. Close WoW soon to save this session.',
+                              'unsupported_game_connection':'An IPv6 game connection is outside capture support.'}
+                    result_text.set(messages.get(event.get('code'), 'Capture needs review.'))
                 elif state=='library_warning':
                     result_text.set('Some older captures need review. Originals remain saved.')
                 else:

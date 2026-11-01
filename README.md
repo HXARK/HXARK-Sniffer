@@ -51,7 +51,24 @@ Capture and metadata recording are automatic. Open the sniffer, wait for Ready,
 play WoW, then close the game to save your PKTs. No manual packet annotations or
 parser installation are required.
 
-Capture limits: 12 hours, 1 GiB total input, 8 interfaces. EXEs are not Authenticode signed. Use only on sessions you are authorized to capture.
+Each new PKT has an optional `.pkt.capture.json` quality receipt beside it,
+linked by SHA-256. It records the build, connection, counts and capture status,
+without session keys, network addresses or account details. Keep it with the
+PKT for quality checks. Standard WowPacketParser reads the PKT directly and
+does not need the receipt.
+
+Location filenames are recognized for both supported builds, 70575 and 70688.
+
+The receipt includes final capture-driver drop counts when available. Unavailable
+counters stay unknown. Detected IPv6 game connections are reported as unsupported;
+they are not captured. These checks do not prove that all game traffic was observed.
+
+Capture limits: 12 hours from WoW detection, 1 GiB input, 1 million candidate
+packets, 8 interfaces, 32 flows per interface and 32 session-key snapshots.
+Input and packet limits are divided between interfaces. The app warns before
+these limits; it keeps recovery data if a capture stops early.
+
+EXEs are not Authenticode signed. Use only on sessions you are authorized to capture.
 
 ## License
 

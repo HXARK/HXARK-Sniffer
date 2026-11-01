@@ -68,18 +68,20 @@ def fixed_version(path):
     return build_from_fixed_version(ms,ls),[ms>>16,ms&65535,ls>>16,ls&65535]
 
 
-def tcp_rows(pid, *, connecting=False):
-    from .windows_tables import parse_tcp_table
+def tcp_rows(pid, *, connecting=False, ipv6=False):
+    from .windows_tables import parse_tcp_table, parse_tcp6_table
     _apis();ip=C.WinDLL('iphlpapi',use_last_error=True)
     fn=ip.GetExtendedTcpTable
     fn.argtypes=[PTR,C.POINTER(U32),C.c_int,U32,U32,U32];fn.restype=U32
-    size=U32(0);code=fn(None,C.byref(size),False,2,5,0)
+    family=23 if ipv6 else 2
+    parse=parse_tcp6_table if ipv6 else parse_tcp_table
+    size=U32(0);code=fn(None,C.byref(size),False,family,5,0)
     for _ in range(4):
         if code not in (0,122) or not 4<=size.value<=16*1024*1024:
             raise ValueError('tcp_inventory_unavailable')
         buffer=C.create_string_buffer(size.value)
-        code=fn(buffer,C.byref(size),False,2,5,0)
-        if code==0:return parse_tcp_table(buffer.raw[:size.value],pid,connecting=connecting)
+        code=fn(buffer,C.byref(size),False,family,5,0)
+        if code==0:return parse(buffer.raw[:size.value],pid,connecting=connecting)
     raise ValueError('tcp_inventory_unstable')
 
 
