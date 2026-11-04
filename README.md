@@ -2,7 +2,7 @@
 
 WoW Retail packet capture for Windows. Detects the network interface and saves PKT files for [WowPacketParser](https://github.com/TrinityCore/WowPacketParser).
 
-**Beta: Retail 12.1.5 builds 70575 and 70688, Windows x64, IPv4.**
+**Beta: Retail 12.1.5 builds 70575, 70688 and 70783, Windows x64, IPv4.**
 
 ## Use
 
@@ -57,7 +57,7 @@ without session keys, network addresses or account details. Keep it with the
 PKT for quality checks. Standard WowPacketParser reads the PKT directly and
 does not need the receipt.
 
-Location filenames are recognized for both supported builds, 70575 and 70688.
+Location filenames are recognized for all three supported builds.
 
 The receipt includes final capture-driver drop counts when available. Unavailable
 counters stay unknown. Detected IPv6 game connections are reported as unsupported;

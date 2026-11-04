@@ -83,7 +83,7 @@ def describe_capture(source):
                 raise ValueError('invalid_capture_record')
             stream.seek(offset + 20 + extra)
             opcode = struct.unpack('<I', stream.read(4))[0]
-            if direction == 0x47534d53 and build in (70575, 70688):
+            if direction == 0x47534d53 and build in (70575, 70688, 70783):
                 location = None
                 if opcode == 0x4501f0:  # SMSG_INIT_WORLD_STATES
                     if length - 4 < 16:
